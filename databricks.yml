@@ -1,0 +1,19 @@
+# This is a Declarative Automation Bundle definition for agentic-supply-chain-data-platform.
+# The Databricks extension requires databricks.yml configuration file.
+# See https://docs.databricks.com/dev-tools/bundles/index.html for documentation.
+
+bundle:
+  name: agentic-supply-chain-data-platform
+
+targets:
+  dev:
+    mode: development
+    default: true
+    workspace:
+      host: https://adb-7405606288833836.16.azuredatabricks.net
+
+  ## Optionally, there could be 'staging' or 'prod' targets here.
+  #
+  # prod:
+  #   workspace:
+  #     host: https://adb-7405606288833836.16.azuredatabricks.net
