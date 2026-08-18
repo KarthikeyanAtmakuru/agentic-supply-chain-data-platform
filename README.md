@@ -2,7 +2,7 @@
 
 A supply chain data platform built on Azure Databricks. The end goal is an AI agent that answers operational questions about orders and shipments in plain English, backed by a clean medallion data architecture.
 
-This README tracks progress through each phase of the build. Currently at Step 3.
+This README tracks progress through each phase of the build. Currently at Step 5 — agent is live on a Model Serving endpoint.
 
 ---
 
@@ -70,7 +70,7 @@ Because `is_fulfilled` in the gold layer was derived as `order_status = 'DELIVER
 - Same `UPDATE` on `silver_fact_orders`
 - `MERGE` from silver into `gold_order_summary` (fixes both order_status and is_fulfilled)
 - `MERGE` from silver into `gold_product_revenue` (fixes delivered_orders count)
-- `gold_shipment_performance.order_status` still has the old value and needs a MERGE fix before the agent goes to production
+- `gold_shipment_performance.order_status` fixed via MERGE in `03 Register Agent UC Functions` — final distribution: DELIVERED 499K, SHIPPED 300K, PROCESSING 100K, PENDING 51K, CANCELLED 50K
 
 **Generation notebook fix:**
 Removed the broken `.withColumn("order_status", "string", values=[...], weights=[...])` line from the `dbldatagen` spec and replaced it with a plain PySpark `withColumn` using `F.rand()` with cumulative thresholds. This matches the pattern already used for `delivery_notes` in the shipments cell.
@@ -134,9 +134,88 @@ The Mosaic AI Agent Framework can auto-discover functions by schema path, so poi
 
 ---
 
+---
+
+## Part 07: Build the Agent (Step 4)
+
+Built a LangChain tool-calling agent in `docs/Notebooks/04_build_agent` using a manual `bind_tools` ReAct loop (no LangGraph dependency).
+
+**Stack:**
+- **LLM:** `databricks-meta-llama-3-3-70b-instruct` via `ChatDatabricks` (pay-per-token Foundation Model API)
+- **Tools:** `UCFunctionToolkit` auto-discovers all functions from `abd_supplychain_dev.gold.*` at runtime
+- **Framework:** Manual `bind_tools` loop — avoids LangGraph version conflicts on Serverless compute
+- **Tracking:** MLflow tracing (disabled by default; opt-in per cell via `mlflow.langchain.autolog()`)
+
+**7 UC tools (6 original + 1 added in this step):**
+
+| Tool | Purpose |
+| :--- | :--- |
+| `get_order_by_id` | Order status and detail by order ID |
+| `get_orders_by_customer` | All orders for a customer |
+| `get_orders_by_category` | Category-level performance over a date range |
+| `get_shipment_by_order` | Shipment detail and delivery status for an order |
+| `get_carrier_performance` | On-time rate, lead time, cost per carrier |
+| `get_delayed_shipments` | Top N most delayed shipments |
+| `get_product_revenue` | Revenue, order count, and metrics by product SKU |
+
+**Agent test results (all passing):**
+
+| Question | Answer |
+| :--- | :--- |
+| Status of order 500000? | DELIVERED, Electronics, WH-North, $251.50 |
+| Customer 1000 most recent 5 orders? | Listed with IDs, dates, categories, statuses |
+| Electronics orders in 2025? | 167,021 orders, $26.3B total revenue |
+| Highest fulfilled category? | Electronics, 125,511 fulfilled orders |
+| Shipment for order 500000? | Fedex Supply, 143 lead days, not on time |
+| Lowest avg lead time carrier? | Xpo Logistics, 7.4 days |
+| 10 most delayed shipments? | Listed, worst = 560 days |
+| Revenue for product S2U-ddddd? | $21,950.00 |
+| Forecast demand (out of scope)? | Correctly declined |
+| Update order status (out of scope)? | Correctly declined |
+
+**Model logged to MLflow:**
+- Experiment: `supply-chain-agent`
+- Registered model: `abd_supplychain_dev.gold.supply_chain_agent` (version 5, current)
+- Pattern: `mlflow.pyfunc.PythonModel` wrapper with explicit `ModelSignature`
+
+Notebook: `docs/Notebooks/04_build_agent`
+
+---
+
+## Part 08: Deploy to Model Serving (Step 5)
+
+Deployed the registered model to a Databricks Model Serving endpoint.
+
+**Endpoint:** `supply-chain-agent`
+**URL:** `https://adb-7405604796734154.14.azuredatabricks.net/serving-endpoints/supply-chain-agent/invocations`
+**Config:** Small workload, scale-to-zero enabled
+
+**Auth:** The serving container authenticates to Unity Catalog via a PAT injected as `DATABRICKS_TOKEN` from a Databricks secret scope (`supply-chain-agent/databricks-pat`). Both `DATABRICKS_HOST` and `DATABRICKS_TOKEN` are set in `environment_vars` on `ServedModelInput`.
+
+**How to call the endpoint from a notebook:**
+```python
+from mlflow.deployments import get_deploy_client
+client = get_deploy_client("databricks")
+resp = client.predict(
+    endpoint="supply-chain-agent",
+    inputs={"dataframe_records": [{"question": "What is the status of order 500000?"}]},
+)
+print(resp["predictions"])
+```
+
+**Key technical decisions:**
+- `mlflow.deployments` used for REST calls (handles auth on all compute types including Serverless)
+- UC functions are discovered at inference time via `UCFunctionToolkit(function_names=["abd_supplychain_dev.gold.*"])` — adding new functions to the schema makes them available immediately without re-deploying
+- Re-log only needed when wrapper code changes; UC function additions are live automatically
+- MLflow tracing disabled by default for clean output; enable per-cell with `mlflow.langchain.autolog()`
+
+---
+
 ## What is Next
 
-| Step | Task |
+| Area | Task |
 | :--- | :--- |
-| Step 4 | Build the agent using Mosaic AI Agent Framework, wired to the 6 UC functions |
-| Step 5 | Deploy to a Model Serving endpoint, run evaluations, monitor in production |
+| Evaluations | Run `mlflow.evaluate` on a golden question set to track answer quality over time |
+| UC function descriptions | Add parameter descriptions to all 7 UC functions to improve LLM tool-calling accuracy |
+| PAT rotation | Automate PAT refresh before the 90-day expiry (token ID stored in secret scope) |
+| Production monitoring | Set up endpoint latency and error-rate alerts via Databricks Jobs |
