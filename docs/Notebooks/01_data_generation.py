@@ -1,4 +1,12 @@
 # Databricks notebook source
+# /// script
+# [tool.databricks.environment]
+# environment_version = "5"
+# dependencies = [
+#   "dbldatagen",
+#   "faker",
+# ]
+# ///
 # MAGIC %pip install dbldatagen faker
 
 # COMMAND ----------
@@ -67,6 +75,7 @@ print("Saved dim_products as managed table 'default.dim_products'.")
 
 # COMMAND ----------
 
+# DBTITLE 1,Generate fact_orders (1,000,000 rows with duplicates)
 orders_spec = (
     dg.DataGenerator(spark, name="fact_orders", rows=1000000, partitions=8)
     .withColumn("order_id", "long", minValue=500000, maxValue=1500000, step=1)
@@ -74,11 +83,28 @@ orders_spec = (
     .withColumn("warehouse_id", "integer", minValue=1, maxValue=100)
     .withColumn("product_id", "integer", minValue=1001, maxValue=11000)
     .withColumn("quantity", "integer", minValue=1, maxValue=500)
-    .withColumn("order_status", "string", values=["PENDING", "PROCESSING", "SHIPPED", "DELIVERED", "CANCELLED"], weights=[0.05, 0.10, 0.30, 0.50, 0.05])
     .withColumn("order_timestamp", "timestamp", begin="2025-01-01 00:00:00", end="2026-06-30 23:59:59", random=True)
 )
 
 df_orders = orders_spec.build()
+
+# Fix: dbldatagen values+weights has a template resolution bug on string columns
+# (stores literal '{values[-1]}' instead of sampling from the list)
+# Generate order_status using pure PySpark weighted random selection instead
+# Distribution: PENDING 5%, PROCESSING 10%, SHIPPED 30%, DELIVERED 50%, CANCELLED 5%
+df_orders = (
+    df_orders
+    .withColumn("_r", F.rand())
+    .withColumn(
+        "order_status",
+        F.when(F.col("_r") < 0.05,  "PENDING")
+         .when(F.col("_r") < 0.15,  "PROCESSING")
+         .when(F.col("_r") < 0.45,  "SHIPPED")
+         .when(F.col("_r") < 0.95,  "DELIVERED")
+         .otherwise("CANCELLED")
+    )
+    .drop("_r")
+)
 
 # Inject ~2% duplicate order records
 df_duplicates = df_orders.sample(withReplacement=False, fraction=0.02)
