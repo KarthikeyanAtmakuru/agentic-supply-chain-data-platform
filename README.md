@@ -2,7 +2,7 @@
 
 A supply chain data platform built on Azure Databricks. The end goal is an AI agent that answers operational questions about orders and shipments in plain English, backed by a clean medallion data architecture.
 
-This README tracks progress through each phase of the build. Currently at Step 5 — agent is live on a Model Serving endpoint.
+This README tracks progress through each phase of the build. Currently at Step 5 — agent is live on a Model Serving endpoint, all UC functions have parameter descriptions.
 
 ---
 
@@ -213,9 +213,9 @@ print(resp["predictions"])
 
 ## What is Next
 
-| Area | Task |
-| :--- | :--- |
-| Evaluations | Run `mlflow.evaluate` on a golden question set to track answer quality over time |
-| UC function descriptions | Add parameter descriptions to all 7 UC functions to improve LLM tool-calling accuracy |
-| PAT rotation | Automate PAT refresh before the 90-day expiry (token ID stored in secret scope) |
-| Production monitoring | Set up endpoint latency and error-rate alerts via Databricks Jobs |
+| Area | Status | Notes |
+| :--- | :--- | :--- |
+| UC function descriptions | Done | All 7 UC functions have parameter `COMMENT` descriptions — eliminates UCFunctionToolkit warning |
+| Evaluations | Pending | Run `mlflow.evaluate` on a golden question set to track answer quality over time |
+| PAT rotation | Pending | PAT expires ~Nov 16 2026 — re-run cell 14 in `04_build_agent` to refresh |
+| Production monitoring | Pending | Set up endpoint latency and error-rate alerts via Databricks Jobs |
