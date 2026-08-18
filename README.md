@@ -1,6 +1,19 @@
-# agentic-supply-chain-data-platform
+# Agentic Supply Chain Data Platform
 
-A supply chain data platform built on Azure Databricks. The end goal is an AI agent that answers operational questions about orders and shipments in plain English, backed by a clean medallion data architecture.
+An end-to-end AI agent on **Azure Databricks** that answers natural language questions about supply chain operations — orders, shipments, carrier performance, and product revenue — backed by a production **medallion architecture** (Bronze → Silver → Gold) on **Delta Lake**.
+
+**Live:** LangChain tool-calling agent powered by Meta Llama 3.3 70B, deployed to a **Databricks Model Serving** endpoint, querying 1M+ records across 7 **Unity Catalog** SQL tools via a REST API.
+
+### Tech Stack
+
+| Layer | Technologies |
+| :--- | :--- |
+| Data platform | Azure Databricks, Delta Lake, Unity Catalog, PySpark |
+| Data pipeline | Medallion architecture (Bronze / Silver / Gold), `dbldatagen` |
+| AI / Agent | LangChain `bind_tools`, Meta Llama 3.3 70B (Foundation Model API) |
+| MLOps | MLflow 3.x (experiment tracking, model registry, PyFunc serving) |
+| Deployment | Databricks Model Serving, Databricks Secrets, REST API |
+| DevOps | Declarative Automation Bundles (DABs), Git |
 
 This README tracks progress through each phase of the build. Currently at Step 5 — agent is live on a Model Serving endpoint, all UC functions have parameter descriptions.
 
