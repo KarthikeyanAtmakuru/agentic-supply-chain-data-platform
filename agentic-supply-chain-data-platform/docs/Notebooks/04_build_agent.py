@@ -79,33 +79,174 @@ for t in tools:
 # COMMAND ----------
 
 # DBTITLE 1,Register get_product_revenue UC function
-# gold_product_revenue already has per-SKU metrics — just need a UC function to expose it.
+# Re-registers all 7 UC functions with parameter COMMENT descriptions.
+# Fixes the UCFunctionToolkit check_function_info warning on every call.
+functions = {
+    "get_order_by_id": (
+        "order_id BIGINT COMMENT 'Unique numeric order ID. Example: 500000'",
+        "Returns full details for a single order given its order_id.",
+        """
+  SELECT TO_JSON(NAMED_STRUCT(
+    'order_id',           g.order_id,
+    'customer_id',        g.customer_id,
+    'order_date',         CAST(g.order_date AS STRING),
+    'order_status',       g.order_status,
+    'is_fulfilled',       g.is_fulfilled,
+    'product_category',   g.product_category,
+    'sku',                g.sku,
+    'price_tier',         g.price_tier,
+    'warehouse_name',     g.warehouse_name,
+    'warehouse_location', g.warehouse_location,
+    'quantity',           g.quantity,
+    'line_revenue_usd',   g.line_revenue_usd
+  ))
+  FROM abd_supplychain_dev.gold.gold_order_summary g
+  WHERE g.order_id = order_id
+  LIMIT 1"""
+    ),
+    "get_orders_by_customer": (
+        "customer_id INT COMMENT 'Unique numeric customer ID. Example: 1000'",
+        "Returns up to 50 most recent orders for a customer.",
+        """
+  SELECT TO_JSON(COLLECT_LIST(NAMED_STRUCT(
+    'order_id',         g.order_id,
+    'order_date',       CAST(g.order_date AS STRING),
+    'order_status',     g.order_status,
+    'is_fulfilled',     g.is_fulfilled,
+    'product_category', g.product_category,
+    'sku',              g.sku,
+    'warehouse_name',   g.warehouse_name,
+    'quantity',         g.quantity,
+    'line_revenue_usd', g.line_revenue_usd
+  )))
+  FROM (
+    SELECT * FROM abd_supplychain_dev.gold.gold_order_summary
+    WHERE customer_id = customer_id ORDER BY order_date DESC LIMIT 50
+  ) g"""
+    ),
+    "get_shipment_by_order": (
+        "order_id INT COMMENT 'Unique numeric order ID to look up the associated shipment. Example: 500000'",
+        "Returns shipment and delivery details for a specific order.",
+        """
+  SELECT TO_JSON(NAMED_STRUCT(
+    'shipment_id',        s.shipment_id,
+    'order_id',           s.order_id,
+    'carrier',            s.carrier,
+    'ship_date',          CAST(s.ship_date AS STRING),
+    'delivery_lead_days', s.delivery_lead_days,
+    'is_on_time',         s.is_on_time,
+    'shipment_cost_usd',  s.shipment_cost_usd,
+    'cost_per_unit_usd',  s.cost_per_unit_usd,
+    'order_status',       s.order_status,
+    'delivery_notes',     s.delivery_notes
+  ))
+  FROM abd_supplychain_dev.gold.gold_shipment_performance s
+  WHERE s.order_id = order_id
+  LIMIT 1"""
+    ),
+    "get_delayed_shipments": (
+        "max_results INT COMMENT 'Max delayed shipments to return, sorted by longest delay first. Recommended: 10-20. Example: 10'",
+        "Returns delayed shipments sorted by worst delay first.",
+        """
+  SELECT TO_JSON(COLLECT_LIST(NAMED_STRUCT(
+    'shipment_id',        s.shipment_id,
+    'order_id',           s.order_id,
+    'carrier',            s.carrier,
+    'ship_date',          CAST(s.ship_date AS STRING),
+    'delivery_lead_days', s.delivery_lead_days,
+    'shipment_cost_usd',  s.shipment_cost_usd,
+    'delivery_notes',     s.delivery_notes
+  )))
+  FROM (
+    SELECT *, ROW_NUMBER() OVER (ORDER BY delivery_lead_days DESC) AS rn
+    FROM abd_supplychain_dev.gold.gold_shipment_performance
+    WHERE is_on_time = FALSE AND carrier IS NOT NULL
+  ) s WHERE s.rn <= COALESCE(max_results, 20)"""
+    ),
+    "get_product_revenue": (
+        "sku_input STRING COMMENT 'Product SKU to look up. Example: S2U-ddddd. Case-insensitive match.'",
+        "Returns total revenue, order count, and key metrics for a product by SKU.",
+        """
+  SELECT to_json(struct(
+    product_id, sku, category, price_tier, unit_price_usd,
+    total_orders, total_quantity_sold, total_revenue_usd,
+    avg_revenue_per_order_usd, avg_quantity_per_order, delivered_orders
+  ))
+  FROM abd_supplychain_dev.gold.gold_product_revenue
+  WHERE upper(sku) = upper(sku_input)
+  LIMIT 1"""
+    ),
+}
+
+# get_orders_by_category and get_carrier_performance have multi-param signatures
+# handled separately below
+for fn_name, (params, comment, body) in functions.items():
+    spark.sql(f"""
+    CREATE OR REPLACE FUNCTION abd_supplychain_dev.gold.{fn_name}({params})
+    RETURNS STRING LANGUAGE SQL
+    COMMENT '{comment}'
+    RETURN ({body})
+    """)
+    print(f"Registered: {fn_name}")
+
+# get_orders_by_category — 3 params
 spark.sql("""
-CREATE OR REPLACE FUNCTION abd_supplychain_dev.gold.get_product_revenue(sku_input STRING)
-RETURNS STRING
-LANGUAGE SQL
-COMMENT 'Returns total revenue, order count, and key metrics for a product by SKU.
-          Pass the exact SKU string (e.g. S2U-ddddd). Case-insensitive match.'
+CREATE OR REPLACE FUNCTION abd_supplychain_dev.gold.get_orders_by_category(
+  category   STRING COMMENT 'Product category. One of: Electronics, Industrial, Apparel, Logistics Equipment',
+  start_date STRING COMMENT 'Start date in YYYY-MM-DD format. Must be between 2025-01-01 and 2026-06-30',
+  end_date   STRING COMMENT 'End date in YYYY-MM-DD format. Must be between 2025-01-01 and 2026-06-30'
+)
+RETURNS STRING LANGUAGE SQL
+COMMENT 'Returns aggregated order performance for a category within a date range.'
 RETURN (
-    SELECT to_json(struct(
-        product_id,
-        sku,
-        category,
-        price_tier,
-        unit_price_usd,
-        total_orders,
-        total_quantity_sold,
-        total_revenue_usd,
-        avg_revenue_per_order_usd,
-        avg_quantity_per_order,
-        delivered_orders
-    ))
-    FROM abd_supplychain_dev.gold.gold_product_revenue
-    WHERE upper(sku) = upper(sku_input)
-    LIMIT 1
+  SELECT TO_JSON(NAMED_STRUCT(
+    'category',              category,
+    'start_date',            start_date,
+    'end_date',              end_date,
+    'total_orders',          COUNT(*),
+    'fulfilled_orders',      CAST(SUM(CASE WHEN g.is_fulfilled THEN 1 ELSE 0 END) AS BIGINT),
+    'total_quantity',        CAST(SUM(g.quantity) AS BIGINT),
+    'total_revenue_usd',     ROUND(SUM(g.line_revenue_usd), 2),
+    'avg_order_revenue_usd', ROUND(AVG(g.line_revenue_usd), 2)
+  ))
+  FROM abd_supplychain_dev.gold.gold_order_summary g
+  WHERE UPPER(TRIM(g.product_category)) = UPPER(TRIM(category))
+    AND g.order_date >= CAST(start_date AS DATE)
+    AND g.order_date <= CAST(end_date AS DATE)
 )
 """)
-print("Function registered: abd_supplychain_dev.gold.get_product_revenue")
+print("Registered: get_orders_by_category")
+
+# get_carrier_performance — 1 param with null support
+spark.sql("""
+CREATE OR REPLACE FUNCTION abd_supplychain_dev.gold.get_carrier_performance(
+  carrier STRING COMMENT 'Carrier name. One of: Fedex Supply, Ups Freight, Dhl Express, Amazon Logistics, Xpo Logistics. Pass NULL or empty string for all carriers.'
+)
+RETURNS STRING LANGUAGE SQL
+COMMENT 'Returns performance KPIs per carrier. Pass NULL to get all carriers.'
+RETURN (
+  SELECT TO_JSON(COLLECT_LIST(stats))
+  FROM (
+    SELECT NAMED_STRUCT(
+      'carrier',                s.carrier,
+      'total_shipments',        COUNT(*),
+      'on_time_shipments',      CAST(SUM(CASE WHEN s.is_on_time THEN 1 ELSE 0 END) AS BIGINT),
+      'on_time_pct',            ROUND(AVG(CASE WHEN s.is_on_time THEN 100.0 ELSE 0.0 END), 1),
+      'avg_delivery_lead_days', ROUND(AVG(CAST(s.delivery_lead_days AS DOUBLE)), 1),
+      'avg_shipment_cost_usd',  ROUND(AVG(s.shipment_cost_usd), 2)
+    ) AS stats
+    FROM abd_supplychain_dev.gold.gold_shipment_performance s
+    WHERE s.carrier IS NOT NULL
+      AND (
+        carrier IS NULL OR TRIM(carrier) = ''
+        OR LOWER(s.carrier) LIKE CONCAT('%', LOWER(TRIM(carrier)), '%')
+      )
+    GROUP BY s.carrier
+  )
+)
+""")
+print("Registered: get_carrier_performance")
+print("\nAll 7 UC functions registered with parameter descriptions.")
 
 # COMMAND ----------
 
